@@ -1,0 +1,91 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'  
+
+jobs:
+  build-and-publish-docker-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Build and push nginx image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./nginx
+          file: ./nginx/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/nginx-app:latest
+
+      - name: Build and push python_app image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Python
+          file: ./Python/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/python-app:latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-publish-docker-image
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Remote SSH into VPS and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST  }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          envs:
+            DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          
+          script: |
+
+          docker pull $DOCKER_USERNAME/nginx-app:latest
+          docker pull $DOCKER_USERNAME/python-app:latest
+
+          # Run Docker Compose inline to start services
+          docker-compose -p my_project up -d --remove-orphans <<EOF
+          version: '3.8'
+
+          services:
+            nginx:
+              image: $DOCKER_USERNAME/nginx-app:latest
+              ports:
+                - "80:80"
+              volumes:
+                - /etc/nginx/nginx.conf:/etc/nginx/nginx.conf  
+              networks:
+                - nginx-network
+
+            python-app:
+              image: $DOCKER_USERNAME/python-app:latest
+              container_name: python_app
+              expose:
+                - "8000"
+              networks:
+                - nginx-network
+
+          networks:
+            nginx-network:
+              driver: bridge
+          EOF
